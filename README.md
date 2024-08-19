@@ -1,6 +1,10 @@
 # To get CT-CLIP Model
 Go to the CTRATE dataset on huggingface to download the model and place it at `./models` under the name `CT_CLIP.pt`
 
+# To build the container with CT-CLIP
+`docker build . --build-arg="CLIP_MODEL_NAME=CT_CLIP" --build-arg="TEXT_MODEL_NAME=None"`
+
+
 # multi2vec-clip-inference
 The inference container for the clip module
 

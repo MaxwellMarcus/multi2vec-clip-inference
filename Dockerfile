@@ -28,7 +28,7 @@ RUN pip3 install -e CTCLIP/transformer_maskgit
 
 RUN apt-get install libgl1 -y
 
-#RUN python3 test.py
+RUN python3 test.py
 
 ENTRYPOINT ["/bin/sh", "-c"]
 CMD ["uvicorn app:app --host 0.0.0.0 --port 8080"]

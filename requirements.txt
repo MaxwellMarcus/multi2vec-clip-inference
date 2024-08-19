@@ -6,3 +6,5 @@ torch==2.0.1
 sentence-transformers==2.2.2
 open-clip-torch==2.20.0
 opencv-python==4.10.0.84
+nibabel
+pydicom

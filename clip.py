@@ -16,7 +16,10 @@ from threading import Lock
 import numpy as np
 from ct_clip import CTCLIP
 from transformer_maskgit import CTViT
-
+import pydicom
+import nibabel as nib
+import pandas as pd
+import torch.nn.functional as F
 
 class ClipInput(BaseModel):
 	texts: list = []
@@ -303,6 +306,108 @@ class CTClip:
 		self.clip_model = model
 		self.tokenizer = tokenizer 
 
+
+	def resize_array(self, array, current_spacing, target_spacing):
+		"""
+		Resize the array to match the target spacing.
+
+		Args:
+		array (torch.Tensor): Input array to be resized.
+		current_spacing (tuple): Current voxel spacing (z_spacing, xy_spacing, xy_spacing).
+		target_spacing (tuple): Target voxel spacing (target_z_spacing, target_x_spacing, target_y_spacing).
+
+		Returns:
+		np.ndarray: Resized array.
+		"""
+		# Calculate new dimensions
+		original_shape = array.shape[2:]
+		scaling_factors = [
+			current_spacing[i] / target_spacing[i] for i in range(len(original_shape))
+		]
+		new_shape = [
+			int(original_shape[i] * scaling_factors[i]) for i in range(len(original_shape))
+		]
+		# Resize the array
+		resized_array = F.interpolate(array, size=new_shape, mode='trilinear', align_corners=False).cpu().numpy()
+		return resized_array
+
+	def process_nifti_file(self, img_data, df):
+		"""
+		Process a single NIfTI file.
+
+		Args:
+		file_path (str): Path to the NIfTI file.
+
+		Returns:
+		None
+		"""
+
+		row = df
+		slope = float(row["RescaleSlope"].iloc[0])
+		intercept = float(row["RescaleIntercept"].iloc[0])
+		xy_spacing = float(row["XYSpacing"].iloc[0][1:][:-2].split(",")[0])
+		z_spacing = float(row["ZSpacing"].iloc[0])
+
+
+		# Define the target spacing values
+		target_x_spacing = 0.75
+		target_y_spacing = 0.75
+		target_z_spacing = 1.5
+
+		current = (z_spacing, xy_spacing, xy_spacing)
+		target = (target_z_spacing, target_x_spacing, target_y_spacing)
+
+		img_data = slope * img_data + intercept
+		hu_min, hu_max = -1000, 1000
+		img_data = np.clip(img_data, hu_min, hu_max)
+		img_data = ((img_data / 1000)).astype(np.float32)
+
+		img_data = img_data.transpose(2, 0, 1)
+		tensor = torch.tensor(img_data)
+		tensor = tensor.unsqueeze(0).unsqueeze(0)
+
+		resized_array = self.resize_array(tensor, current, target)
+		resized_array = resized_array[0][0]
+
+		return resized_array
+
+	def process_dcm_file(self, dcms):
+		"""
+		Process a series of dcm files.
+		"""
+
+		dcm = dcms[ 0 ]
+
+		slope = float( dcm.RescaleIntercept )
+		intercept = float( dcm.RescaleIntercept )
+		xy_spacing = float( dcm.PixelSpacing[ 0 ] )
+		z_spacing = float( dcm.SliceThickness )
+
+		img_data = np.array( [ i.pixel_array for i in dcms ] )
+
+		# Define the target spacing values
+		target_x_spacing = 0.75
+		target_y_spacing = 0.75
+		target_z_spacing = 1.5
+
+		current = (z_spacing, xy_spacing, xy_spacing)
+		target = (target_z_spacing, target_x_spacing, target_y_spacing)
+
+		img_data = slope * img_data + intercept
+		hu_min, hu_max = -1000, 1000
+		img_data = np.clip(img_data, hu_min, hu_max)
+		img_data = ((img_data / 1000)).astype(np.float32)
+
+		img_data = img_data.transpose(2, 0, 1)
+		tensor = torch.tensor(img_data)
+		tensor = tensor.unsqueeze(0).unsqueeze(0)
+
+		resized_array = self.resize_array(tensor, current, target)
+		resized_array = resized_array[0][0]
+
+		return resized_array
+
+
 	def preprocess( self, img_data ):
 		img_data= np.transpose(img_data, (1, 2, 0)) 
 		img_data = img_data*1000 
@@ -396,10 +501,29 @@ class CTClip:
 
 	def preprocess_image(self, base64_encoded_image_string):
 		if base64_encoded_image_string:
-			image_bytes = base64.b64decode(base64_encoded_image_string)
-			img = np.load(io.BytesIO(image_bytes))
+			if base64_encoded_image_string[ 0 ] == "nifti":
+				_, img_str, metadata = base64_encoded_image_string
+				img_bytes = base64.b64decode( img_str )
+				metadata_bytes = base64.b64decode( metadata )
+
+				fh = nib.FileHolder( fileobj=io.BytesIO( img_bytes ) )
+				try:
+					nii_img = nib.Nifti1Image.from_file_map( { "header": fh, "image": fh } )
+				except Exception as e:
+					print( e )
+					nii_img = nib.Nifti2Image.from_file_map( { "header": fh, "image": fh } )
+				img = nii_img.get_fdata()
+
+				df = pd.read_csv( io.BytesIO( metadata_bytes ) )
+
+				img = self.process_nifti_file( img, df )
+			else:
+				dcms = [ pydicom.dcmread( io.BytesIO( base64.b64decode( i ) ) )
+							for i in base64_encoded_image_string[ 1 ] ]
+				img = self.process_dcm_file( dcms )
 		else:
 			img = np.zeros( ( 480, 480, 240 ) )
+		print( img.shape )
 		return self.preprocess( img ).unsqueeze(0).to(device=self.device)
 
 class Clip:
